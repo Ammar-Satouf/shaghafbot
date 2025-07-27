@@ -1,0 +1,667 @@
+import telebot
+from telebot import types
+import threading
+import time
+from flask import Flask
+from config import BOT_TOKEN, OWNER_ID, RAGHAD_ID, CHANNEL_ID
+from utils import is_authorized, get_user_name, get_love_message, calculate_love_duration
+from resources import MONTHS_ARABIC, DAYS_ARABIC
+from datetime import datetime
+import random
+import json
+import re
+
+bot = telebot.TeleBot(BOT_TOKEN)
+
+# Flask app للـ keep alive
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "🤍 بوت شغف يعمل بحب!"
+
+def run_flask():
+    app.run(host='0.0.0.0', port=8080, debug=False)
+
+# بدء Flask في thread منفصل
+flask_thread = threading.Thread(target=run_flask)
+flask_thread.daemon = True
+flask_thread.start()
+
+# تخزين الذكريات محلياً (مؤقت)
+memories_store = []
+
+def save_memory_to_channel(user_id, content, file_id=None, file_type=None):
+    """حفظ الذكرى في القناة"""
+    try:
+        name = get_user_name(user_id)
+        timestamp = datetime.now().strftime('%d/%m/%Y %H:%M')
+
+        channel_text = f"💝 ذكرى جديدة من {name}:\n\n{content}\n\n📅 {timestamp}"
+
+        # إرسال للقناة
+        if file_id and file_type:
+            # إرسال الملف مع النص
+            if file_type == 'photo':
+                bot.send_photo(CHANNEL_ID, file_id, caption=channel_text)
+            elif file_type == 'video':
+                bot.send_video(CHANNEL_ID, file_id, caption=channel_text)
+            elif file_type == 'document':
+                bot.send_document(CHANNEL_ID, file_id, caption=channel_text)
+            elif file_type == 'voice':
+                bot.send_voice(CHANNEL_ID, file_id, caption=channel_text)
+            elif file_type == 'video_note':
+                bot.send_video_note(CHANNEL_ID, file_id)
+                bot.send_message(CHANNEL_ID, channel_text)
+            elif file_type == 'sticker':
+                bot.send_sticker(CHANNEL_ID, file_id)
+                bot.send_message(CHANNEL_ID, channel_text)
+        else:
+            bot.send_message(CHANNEL_ID, channel_text)
+
+        # حفظ محلياً للذكريات العشوائية
+        memories_store.append({
+            'user_id': user_id,
+            'content': content,
+            'timestamp': datetime.now(),
+            'name': name,
+            'file_id': file_id,
+            'file_type': file_type
+        })
+
+        return True
+    except Exception as e:
+        print(f"خطأ في حفظ الذكرى: {e}")
+        return False
+
+def get_memories_from_channel():
+    """جلب جميع الذكريات من القناة"""
+    try:
+        memories = []
+        offset = 0
+        limit = 100
+        
+        while True:
+            # جلب الرسائل من القناة
+            channel_messages = bot.get_chat_history(CHANNEL_ID, offset=offset, limit=limit)
+            
+            if not channel_messages:
+                break
+                
+            for message in channel_messages:
+                # تحقق إذا الرسالة تحتوي على ذكرى
+                if message.text and "💝 ذكرى جديدة من" in message.text:
+                    # استخراج اسم المرسل والمحتوى من النص
+                    lines = message.text.split('\n')
+                    if len(lines) >= 3:
+                        # استخراج اسم المرسل
+                        sender_line = lines[0]
+                        if "عمار ❤️" in sender_line:
+                            user_id = OWNER_ID
+                            name = "عمار ❤️"
+                        elif "رغد 🌸" in sender_line:
+                            user_id = RAGHAD_ID
+                            name = "رغد 🌸"
+                        else:
+                            continue
+                        
+                        # استخراج المحتوى (كل الأسطر ما عدا الأول والأخير)
+                        content = '\n'.join(lines[2:-2]) if len(lines) > 3 else lines[1]
+                        
+                        # استخراج التاريخ من آخر سطر
+                        date_line = lines[-1]
+                        date_match = re.search(r'📅 (\d{2}/\d{2}/\d{4} \d{2}:\d{2})', date_line)
+                        
+                        if date_match:
+                            try:
+                                timestamp = datetime.strptime(date_match.group(1), '%d/%m/%Y %H:%M')
+                            except:
+                                timestamp = message.date
+                        else:
+                            timestamp = message.date
+                        
+                        memories.append({
+                            'user_id': user_id,
+                            'name': name,
+                            'content': content,
+                            'timestamp': timestamp,
+                            'message_id': message.message_id,
+                            'file_id': None,
+                            'file_type': None
+                        })
+                
+                # التحقق من الرسائل التي تحتوي على ملفات مع ذكريات
+                elif message.caption and "💝 ذكرى جديدة من" in message.caption:
+                    lines = message.caption.split('\n')
+                    if len(lines) >= 3:
+                        # استخراج اسم المرسل
+                        sender_line = lines[0]
+                        if "عمار ❤️" in sender_line:
+                            user_id = OWNER_ID
+                            name = "عمار ❤️"
+                        elif "رغد 🌸" in sender_line:
+                            user_id = RAGHAD_ID
+                            name = "رغد 🌸"
+                        else:
+                            continue
+                        
+                        # استخراج المحتوى
+                        content = '\n'.join(lines[2:-2]) if len(lines) > 3 else lines[1]
+                        
+                        # تحديد نوع الملف
+                        file_id = None
+                        file_type = None
+                        
+                        if message.photo:
+                            file_id = message.photo[-1].file_id
+                            file_type = 'photo'
+                        elif message.video:
+                            file_id = message.video.file_id
+                            file_type = 'video'
+                        elif message.document:
+                            file_id = message.document.file_id
+                            file_type = 'document'
+                        elif message.voice:
+                            file_id = message.voice.file_id
+                            file_type = 'voice'
+                        elif message.video_note:
+                            file_id = message.video_note.file_id
+                            file_type = 'video_note'
+                        elif message.sticker:
+                            file_id = message.sticker.file_id
+                            file_type = 'sticker'
+                        
+                        # استخراج التاريخ
+                        date_line = lines[-1]
+                        date_match = re.search(r'📅 (\d{2}/\d{2}/\d{4} \d{2}:\d{2})', date_line)
+                        
+                        if date_match:
+                            try:
+                                timestamp = datetime.strptime(date_match.group(1), '%d/%m/%Y %H:%M')
+                            except:
+                                timestamp = message.date
+                        else:
+                            timestamp = message.date
+                        
+                        memories.append({
+                            'user_id': user_id,
+                            'name': name,
+                            'content': content,
+                            'timestamp': timestamp,
+                            'message_id': message.message_id,
+                            'file_id': file_id,
+                            'file_type': file_type
+                        })
+            
+            offset += limit
+            
+            # إذا جبنا أقل من الحد المطلوب، معناته خلصت الرسائل
+            if len(channel_messages) < limit:
+                break
+        
+        return memories
+        
+    except Exception as e:
+        print(f"خطأ في جلب الذكريات من القناة: {e}")
+        return []
+
+def get_random_memory_from_channel(user_id):
+    """جلب ذكرى عشوائية من القناة"""
+    try:
+        all_memories = get_memories_from_channel()
+        user_memories = [m for m in all_memories if m['user_id'] == user_id]
+        
+        if not user_memories:
+            return None
+        
+        # ترتيب الذكريات حسب التاريخ
+        user_memories.sort(key=lambda x: x['timestamp'])
+        
+        # اختيار ذكرى عشوائية
+        selected_memory = random.choice(user_memories)
+        
+        # إضافة معلومات إضافية
+        selected_memory['formatted_date'] = selected_memory['timestamp'].strftime("%d/%m/%Y الساعة %H:%M")
+        selected_memory['day_name'] = selected_memory['timestamp'].strftime("%A")
+        
+        # ترجمة اسم اليوم للعربية
+        days_translation = {
+            'Monday': 'الاثنين',
+            'Tuesday': 'الثلاثاء', 
+            'Wednesday': 'الأربعاء',
+            'Thursday': 'الخميس',
+            'Friday': 'الجمعة',
+            'Saturday': 'السبت',
+            'Sunday': 'الأحد'
+        }
+        
+        selected_memory['day_name_arabic'] = days_translation.get(selected_memory['day_name'], selected_memory['day_name'])
+        selected_memory['total_memories'] = len(user_memories)
+        selected_memory['memory_index'] = user_memories.index(selected_memory) + 1
+        
+        return selected_memory
+        
+    except Exception as e:
+        print(f"خطأ في جلب ذكرى عشوائية: {e}")
+        return None
+
+def create_main_keyboard():
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    btn1 = types.InlineKeyboardButton("💝 إضافة ذكرى جديدة", callback_data="add_memory")
+    btn2 = types.InlineKeyboardButton("🎁 ذكرى عشوائية", callback_data="random_memory")
+    btn3 = types.InlineKeyboardButton("💕 ذكرى حبنا", callback_data="love_memory")
+    btn4 = types.InlineKeyboardButton("⏰ عداد حبنا", callback_data="love_counter")
+    btn5 = types.InlineKeyboardButton("🌟 مفاجأة حب", callback_data="love_surprise")
+
+    markup.add(btn1, btn2)
+    markup.add(btn3, btn4)
+    markup.add(btn5)
+    return markup
+
+def create_start_keyboard():
+    """إنشاء كيبورد عادي لزر البداية"""
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=False)
+    btn = types.KeyboardButton("بحبك ❤️")
+    markup.add(btn)
+    return markup
+
+@bot.message_handler(commands=['start'])
+def start(message):
+    user_id = message.from_user.id
+
+    if not is_authorized(user_id):
+        bot.send_message(message.chat.id, "🚫 هذا البوت خاص بعمار ورغد فقط.")
+        return
+
+    name = get_user_name(user_id)
+    love_msg = get_love_message(user_id)
+
+    welcome_text = f"أهلًا وسهلًا {name}! 🤍\n\n"
+    welcome_text += "💫 مرحبًا بك في بوت شغف المطور خصيصًا لحفظ ذكرياتكم الحلوة\n\n"
+    welcome_text += f"{love_msg}\n\n"
+    welcome_text += "اضغط على زر 'بحبك ❤️' أو اختر من الأزرار أدناه ⬇️"
+
+    bot.send_message(message.chat.id, welcome_text, 
+                    reply_markup=create_start_keyboard())
+    bot.send_message(message.chat.id, "💝 اختر ما تريد عمله:", 
+                    reply_markup=create_main_keyboard())
+
+@bot.message_handler(func=lambda message: message.text == "بحبك ❤️")
+def love_button_handler(message):
+    user_id = message.from_user.id
+
+    if not is_authorized(user_id):
+        return
+
+    name = get_user_name(user_id)
+    love_msg = get_love_message(user_id, surprise=True)
+
+    response_text = f"💕 وانا كمان بحبك {name}! 🌸\n\n{love_msg}"
+
+    bot.send_message(message.chat.id, response_text, reply_markup=create_main_keyboard())
+
+@bot.callback_query_handler(func=lambda call: True)
+def handle_callback(call):
+    user_id = call.from_user.id
+
+    if not is_authorized(user_id):
+        try:
+            bot.answer_callback_query(call.id, "❌ غير مسموح لك باستخدام هذا البوت")
+        except:
+            pass
+        return
+
+    try:
+        if call.data == "add_memory":
+            try:
+                bot.answer_callback_query(call.id, "💝 أرسل ذكرتك الآن")
+            except:
+                pass
+            memory_markup = types.InlineKeyboardMarkup()
+            text_btn = types.InlineKeyboardButton("📝 نص عادي", callback_data="memory_text")
+            caption_btn = types.InlineKeyboardButton("🏷️ مع نص توضيحي", callback_data="memory_caption")
+            back_btn = types.InlineKeyboardButton("🔙 رجوع", callback_data="back_main")
+            memory_markup.add(text_btn, caption_btn)
+            memory_markup.add(back_btn)
+            
+            try:
+                bot.delete_message(call.message.chat.id, call.message.message_id)
+            except:
+                pass
+            bot.send_message(call.message.chat.id, "💝 كيف بدك تحفظ الذكرى؟", reply_markup=memory_markup)
+
+        elif call.data == "memory_text":
+            try:
+                bot.answer_callback_query(call.id, "💝 أرسل ذكرتك الآن")
+            except:
+                pass
+            bot.send_message(call.message.chat.id, "💝 اكتب الذكرى الحلوة اللي بدك تحفظها:")
+            bot.register_next_step_handler(call.message, save_memory)
+
+        elif call.data == "memory_caption":
+            try:
+                bot.answer_callback_query(call.id, "🏷️ أرسل الملف مع نص توضيحي")
+            except:
+                pass
+            bot.send_message(call.message.chat.id, "🏷️ أرسل الصورة أو الفيديو أو الملف مع النص التوضيحي في خانة Caption:")
+            bot.register_next_step_handler(call.message, save_memory)
+
+        elif call.data == "random_memory":
+            try:
+                bot.answer_callback_query(call.id, "🔍 جاري البحث في الذكريات...")
+            except:
+                pass
+                
+            memory = get_random_memory_from_channel(user_id)
+            if memory:
+                # تنسيق النص مع تفاصيل منظمة
+                name = memory['name']
+                content = memory['content']
+                formatted_date = memory['formatted_date']
+                day_name = memory['day_name_arabic']
+                
+                text = f"🎁 ذكرى عشوائية حلوة من {name}:\n\n"
+                text += f"💫 {content}\n\n"
+                text += f"📅 {formatted_date}\n"
+                text += f"🗓️ يوم {day_name}\n\n"
+                text += f"✨ ذكرى رقم {memory['memory_index']} من أصل {memory['total_memories']} ذكرى محفوظة"
+
+                random_markup = types.InlineKeyboardMarkup()
+                again_btn = types.InlineKeyboardButton("🔄 ذكرى أخرى", callback_data="random_memory")
+                back_btn = types.InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="back_main")
+                random_markup.add(again_btn)
+                random_markup.add(back_btn)
+
+                # حذف الرسالة الحالية أولاً
+                try:
+                    bot.delete_message(call.message.chat.id, call.message.message_id)
+                except:
+                    pass
+
+                # إرسال الذكرى حسب نوعها
+                if memory.get('file_id') and memory.get('file_type'):
+                    file_id = memory['file_id']
+                    file_type = memory['file_type']
+                    
+                    try:
+                        # إرسال الملف مع النص
+                        if file_type == 'photo':
+                            bot.send_photo(call.message.chat.id, file_id, caption=text, reply_markup=random_markup)
+                        elif file_type == 'video':
+                            bot.send_video(call.message.chat.id, file_id, caption=text, reply_markup=random_markup)
+                        elif file_type == 'document':
+                            bot.send_document(call.message.chat.id, file_id, caption=text, reply_markup=random_markup)
+                        elif file_type == 'voice':
+                            bot.send_voice(call.message.chat.id, file_id, caption=text, reply_markup=random_markup)
+                        elif file_type == 'video_note':
+                            bot.send_video_note(call.message.chat.id, file_id)
+                            bot.send_message(call.message.chat.id, text, reply_markup=random_markup)
+                        elif file_type == 'sticker':
+                            bot.send_sticker(call.message.chat.id, file_id)
+                            bot.send_message(call.message.chat.id, text, reply_markup=random_markup)
+                    except Exception as e:
+                        # إذا الملف مش متاح، أرسل النص بس
+                        bot.send_message(call.message.chat.id, text, reply_markup=random_markup)
+                else:
+                    # ذكرى نصية عادية
+                    bot.send_message(call.message.chat.id, text, reply_markup=random_markup)
+            else:
+                try:
+                    bot.answer_callback_query(call.id, "📭 لا توجد ذكريات محفوظة بعد")
+                except:
+                    pass
+                bot.send_message(call.message.chat.id, "📭 لا توجد ذكريات محفوظة بعد في القناة", reply_markup=create_main_keyboard())
+
+        elif call.data == "love_memory":
+            love_text = "💕 ذكرى حبنا الخاصة 💕\n\n"
+            love_text += "📅 6 تموز 2025\n"
+            love_text += "💫 بداية قصة حبنا الحلوة\n\n"
+            love_text += "🌸 هاي أحلى ذكرى بحياتنا، يوم اللي قررنا نكون سوا للأبد 💕\n"
+            love_text += "🤍 كل يوم بمر بيزيد حبنا أكتر وأكتر"
+
+            love_markup = types.InlineKeyboardMarkup()
+            back_btn = types.InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="back_main")
+            love_markup.add(back_btn)
+
+            try:
+                bot.delete_message(call.message.chat.id, call.message.message_id)
+            except:
+                pass
+            bot.send_message(call.message.chat.id, love_text, reply_markup=love_markup)
+
+        elif call.data == "love_counter":
+            duration_text = calculate_love_duration()
+
+            counter_markup = types.InlineKeyboardMarkup()
+            refresh_btn = types.InlineKeyboardButton("🔄 تحديث العداد", callback_data="love_counter")
+            back_btn = types.InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="back_main")
+            counter_markup.add(refresh_btn)
+            counter_markup.add(back_btn)
+
+            try:
+                bot.delete_message(call.message.chat.id, call.message.message_id)
+            except:
+                pass
+            bot.send_message(call.message.chat.id, duration_text, reply_markup=counter_markup)
+
+        elif call.data == "love_surprise":
+            name = get_user_name(user_id)
+            surprise_msg = get_love_message(user_id, surprise=True)
+
+            surprise_text = f"🌟 مفاجأة حب خاصة لـ {name} 🌟\n\n{surprise_msg}"
+
+            surprise_markup = types.InlineKeyboardMarkup()
+            again_btn = types.InlineKeyboardButton("💕 مفاجأة أخرى", callback_data="love_surprise")
+            back_btn = types.InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="back_main")
+            surprise_markup.add(again_btn)
+            surprise_markup.add(back_btn)
+
+            try:
+                bot.delete_message(call.message.chat.id, call.message.message_id)
+            except:
+                pass
+            bot.send_message(call.message.chat.id, surprise_text, reply_markup=surprise_markup)
+
+        elif call.data == "back_main":
+            name = get_user_name(user_id)
+            love_msg = get_love_message(user_id)
+
+            main_text = f"🤍 أهلًا {name}!\n\n{love_msg}\n\nاختر ما تريد عمله:"
+
+            try:
+                bot.delete_message(call.message.chat.id, call.message.message_id)
+            except:
+                pass
+            bot.send_message(call.message.chat.id, main_text, reply_markup=create_main_keyboard())
+
+        try:
+            bot.answer_callback_query(call.id)
+        except:
+            pass
+
+    except Exception as e:
+        print(f"خطأ في معالجة الاستدعاء: {e}")
+        try:
+            bot.answer_callback_query(call.id, "❌ حدث خطأ، حاول مرة أخرى")
+        except:
+            pass
+
+
+
+def save_memory(message):
+    user_id = message.from_user.id
+    
+    # تحديد نوع المحتوى
+    content = ""
+    file_id = None
+    file_type = None
+    
+    if message.text:
+        content = message.text
+    elif message.photo:
+        content = message.caption or "📸 صورة حلوة"
+        file_id = message.photo[-1].file_id
+        file_type = 'photo'
+    elif message.video:
+        content = message.caption or "🎥 فيديو رائع"
+        file_id = message.video.file_id
+        file_type = 'video'
+    elif message.document:
+        content = message.caption or f"📄 ملف: {message.document.file_name or 'ملف'}"
+        file_id = message.document.file_id
+        file_type = 'document'
+    elif message.voice:
+        content = "🎤 رسالة صوتية حلوة"
+        file_id = message.voice.file_id
+        file_type = 'voice'
+    elif message.video_note:
+        content = "⭕ فيديو دائري رائع"
+        file_id = message.video_note.file_id
+        file_type = 'video_note'
+    elif message.sticker:
+        content = "😊 ملصق جميل"
+        file_id = message.sticker.file_id
+        file_type = 'sticker'
+    else:
+        content = "💫 ذكرى خاصة"
+
+    try:
+        if save_memory_to_channel(user_id, content, file_id, file_type):
+            success_text = "✅ تم حفظ الذكرى في القناة بنجاح! 💕\n\nبدك تعمل شي تاني؟"
+            bot.send_message(message.chat.id, success_text, reply_markup=create_main_keyboard())
+        else:
+            bot.send_message(message.chat.id, "❌ حدث خطأ في حفظ الذكرى، حاول مرة أخرى")
+
+    except Exception as e:
+        bot.send_message(message.chat.id, "❌ حدث خطأ في حفظ الذكرى، حاول مرة أخرى")
+
+# معالج للصور
+@bot.message_handler(content_types=['photo'])
+def handle_photo(message):
+    user_id = message.from_user.id
+    
+    if not is_authorized(user_id):
+        bot.send_message(message.chat.id, "🚫 هذا البوت خاص بعمار ورغد فقط.")
+        return
+    
+    content = message.caption or "📸 صورة حلوة من ذكرياتنا"
+    file_id = message.photo[-1].file_id
+    
+    try:
+        if save_memory_to_channel(user_id, content, file_id, 'photo'):
+            response_text = "📸 تم حفظ الصورة كذكرى حلوة في القناة! 💕\n\nبدك تعمل شي تاني؟"
+            bot.send_message(message.chat.id, response_text, reply_markup=create_main_keyboard())
+        else:
+            bot.send_message(message.chat.id, "❌ حدث خطأ، حاول مرة أخرى")
+    except Exception as e:
+        bot.send_message(message.chat.id, "❌ حدث خطأ، حاول مرة أخرى")
+
+# معالج للفيديوهات
+@bot.message_handler(content_types=['video'])
+def handle_video(message):
+    user_id = message.from_user.id
+    
+    if not is_authorized(user_id):
+        bot.send_message(message.chat.id, "🚫 هذا البوت خاص بعمار ورغد فقط.")
+        return
+    
+    content = message.caption or "🎥 فيديو رائع من ذكرياتنا"
+    file_id = message.video.file_id
+    
+    try:
+        if save_memory_to_channel(user_id, content, file_id, 'video'):
+            response_text = "🎥 تم حفظ الفيديو كذكرى حلوة في القناة! 💕\n\nبدك تعمل شي تاني؟"
+            bot.send_message(message.chat.id, response_text, reply_markup=create_main_keyboard())
+        else:
+            bot.send_message(message.chat.id, "❌ حدث خطأ، حاول مرة أخرى")
+    except Exception as e:
+        bot.send_message(message.chat.id, "❌ حدث خطأ، حاول مرة أخرى")
+
+# معالج للملفات
+@bot.message_handler(content_types=['document'])
+def handle_document(message):
+    user_id = message.from_user.id
+    
+    if not is_authorized(user_id):
+        bot.send_message(message.chat.id, "🚫 هذا البوت خاص بعمار ورغد فقط.")
+        return
+    
+    content = message.caption or f"📄 ملف: {message.document.file_name or 'ملف مهم'}"
+    file_id = message.document.file_id
+    
+    try:
+        if save_memory_to_channel(user_id, content, file_id, 'document'):
+            response_text = "📄 تم حفظ الملف كذكرى في القناة! 💕\n\nبدك تعمل شي تاني؟"
+            bot.send_message(message.chat.id, response_text, reply_markup=create_main_keyboard())
+        else:
+            bot.send_message(message.chat.id, "❌ حدث خطأ، حاول مرة أخرى")
+    except Exception as e:
+        bot.send_message(message.chat.id, "❌ حدث خطأ، حاول مرة أخرى")
+
+# معالج للرسائل الصوتية
+@bot.message_handler(content_types=['voice'])
+def handle_voice(message):
+    user_id = message.from_user.id
+    
+    if not is_authorized(user_id):
+        bot.send_message(message.chat.id, "🚫 هذا البوت خاص بعمار ورغد فقط.")
+        return
+    
+    content = "🎤 رسالة صوتية حلوة"
+    file_id = message.voice.file_id
+    
+    try:
+        if save_memory_to_channel(user_id, content, file_id, 'voice'):
+            response_text = "🎤 تم حفظ الرسالة الصوتية كذكرى في القناة! 💕\n\nبدك تعمل شي تاني؟"
+            bot.send_message(message.chat.id, response_text, reply_markup=create_main_keyboard())
+        else:
+            bot.send_message(message.chat.id, "❌ حدث خطأ، حاول مرة أخرى")
+    except Exception as e:
+        bot.send_message(message.chat.id, "❌ حدث خطأ، حاول مرة أخرى")
+
+# معالج للملصقات
+@bot.message_handler(content_types=['sticker'])
+def handle_sticker(message):
+    user_id = message.from_user.id
+    
+    if not is_authorized(user_id):
+        bot.send_message(message.chat.id, "🚫 هذا البوت خاص بعمار ورغد فقط.")
+        return
+    
+    content = "😊 ملصق جميل"
+    file_id = message.sticker.file_id
+    
+    try:
+        if save_memory_to_channel(user_id, content, file_id, 'sticker'):
+            response_text = "😊 تم حفظ الملصق كذكرى في القناة! 💕\n\nبدك تعمل شي تاني؟"
+            bot.send_message(message.chat.id, response_text, reply_markup=create_main_keyboard())
+        else:
+            bot.send_message(message.chat.id, "❌ حدث خطأ، حاول مرة أخرى")
+    except Exception as e:
+        bot.send_message(message.chat.id, "❌ حدث خطأ، حاول مرة أخرى")
+
+# معالج للرسائل النصية العادية
+@bot.message_handler(func=lambda message: True)
+def handle_message(message):
+    user_id = message.from_user.id
+
+    if not is_authorized(user_id):
+        bot.send_message(message.chat.id, "🚫 هذا البوت خاص بعمار ورغد فقط.")
+        return
+
+    # حفظ الرسالة كذكرى تلقائيًا في القناة
+    content = message.text
+
+    try:
+        if save_memory_to_channel(user_id, content):
+            response_text = "💫 تم حفظ رسالتك كذكرى حلوة في القناة!\n\nبدك تعمل شي تاني؟"
+            bot.send_message(message.chat.id, response_text, reply_markup=create_main_keyboard())
+        else:
+            bot.send_message(message.chat.id, "❌ حدث خطأ، حاول مرة أخرى")
+
+    except Exception as e:
+        bot.send_message(message.chat.id, "❌ حدث خطأ، حاول مرة أخرى")
+
+if __name__ == "__main__":
+    print("🤍 بوت شغف بدأ العمل...")
+    bot.infinity_polling(none_stop=True, interval=0)
