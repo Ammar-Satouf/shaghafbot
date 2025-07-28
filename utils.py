@@ -53,7 +53,7 @@ def calculate_love_duration():
 
 def get_love_message(user_id, surprise=False):
     from resources import LOVE_SURPRISES_AMMAR, LOVE_SURPRISES_RAGHAD, GENERAL_LOVE_QUOTES
-    
+
     if surprise:
         # عند الضغط على مفاجأة حب، عرض رسائل الشخص الآخر
         if user_id == OWNER_ID:
@@ -69,5 +69,6 @@ def get_love_message(user_id, surprise=False):
         messages = GENERAL_LOVE_QUOTES
 
     return random.choice(messages)
+
 
 # لا حاجة لهذه الدالة بعد الآن لأننا لا نستخدم MongoDB
